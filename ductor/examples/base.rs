@@ -18,6 +18,16 @@ pub enum ConnectionState {
 }
 
 #[typestate(derive(Debug, Clone))]
+pub enum NetworkState {
+  #[transition(NetworkUp, requires = NetCap)]
+  NetworkDown,
+
+  NetworkUp {
+    network: Network<Connected, NetCap>,
+  },
+}
+
+#[typestate(derive(Debug, Clone))]
 pub enum AuthState {
   #[transition(Authenticated, requires = (NetCap, AuthCap))]
   Guest,
@@ -43,30 +53,34 @@ impl Network {
   }
 }
 
-#[unit(derive(Debug, Clone), states = (ConnectionState, AuthState))]
+#[unit(derive(Debug, Clone), states = (NetworkState, AuthState))]
 pub struct MyService<S, C> {
   pub state: S,
   pub caps: C,
 }
 
-#[spec(for = (Disconnected, ()), with = NetCap)]
+#[spec(for = (NetworkDown, ()), with = NetCap)]
 impl MyService {
-  #[transit(to = (Connected, ()))]
-  pub fn connect(self, addr: &str) {
-    self.transition_at(|_| Connected {
-      addr: addr.parse().unwrap(),
-    })
+  #[transit(to = (NetworkUp, ()))]
+  pub fn up(self, network: Network<Connected, NetCap>) {
+    self.transition_at(|_| NetworkUp { network })
   }
 }
 
-#[spec(for = (Connected, ()), with = NetCap)]
+#[spec(for = (NetworkUp, ()))]
 impl MyService {
   pub fn get_addr(&self) -> SocketAddr {
-    self.state.get::<Connected, _>().addr
+    self
+      .state
+      .get::<NetworkUp, _>()
+      .network
+      .state
+      .select(ConnectionState)
+      .addr
   }
 }
 
-#[spec(for = (Connected, Guest), with = (NetCap, AuthCap))]
+#[spec(for = (NetworkUp, Guest), with = (NetCap, AuthCap))]
 impl MyService {
   #[transit(to = ((), Authenticated))]
   pub fn authenticate(self, user: impl Into<String>) {
@@ -74,14 +88,14 @@ impl MyService {
   }
 }
 
-#[spec(for = (Connected, Authenticated), with = AuthCap)]
+#[spec(for = (NetworkUp, Authenticated), with = AuthCap)]
 impl MyService {
   pub fn get_user(&self) -> &String {
     &self.state.select(AuthState).user
   }
 }
 
-#[spec(for = (Connected, Authenticated), with = NetCap)]
+#[spec(for = (NetworkUp, Authenticated), with = NetCap)]
 impl MyService {
   pub fn ping(&self) {
     println!("Pinging with NetCap only...");
@@ -91,8 +105,8 @@ impl MyService {
 fn main() {
   let caps = caps!(NetCap, AuthCap);
 
-  let service = MyService::new(states!(Disconnected, Guest), caps)
-    .connect("127.0.0.1:8080")
+  let service = MyService::new(states!(NetworkDown, Guest), caps)
+    .up(Network::new(Disconnected, NetCap).connect("127.0.0.1:8080"))
     .authenticate("user");
 
   service.ping();
@@ -102,8 +116,4 @@ fn main() {
     service.get_user(),
     service.get_addr(),
   );
-
-  let net = Network::new(Disconnected, NetCap);
-  let net = net.connect("127.0.0.1:80");
-  println!("Network state: {:?}", net.state);
 }
