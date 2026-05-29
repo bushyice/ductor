@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "ductor",
+    "ductor-core",
+    "ductor-macros",
+]
+resolver = "2"
