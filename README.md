@@ -37,10 +37,7 @@ pub enum Door {
 pub struct HasKey;
 
 #[unit(derive(Debug))]
-pub struct Lock<State, Caps> {
-  pub state: State,
-  pub caps: Caps,
-}
+pub struct Lock;
 
 // try adding a transition that doesn't exist, watch it fail
 let lock = Lock::new(Closed, HasKey)
@@ -100,10 +97,7 @@ a single unit can manage multiple independent state machines at the same time us
 
 ```rust
 #[unit(states = (NetworkState, AuthState))]
-pub struct MyService<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct MyService;
 ```
 
 you use `states!(...)` to create the initial tuple and `transition_at()` to transition just one of them:
