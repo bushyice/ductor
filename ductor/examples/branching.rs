@@ -71,10 +71,7 @@ pub enum OrderState {
 // the unit
 
 #[unit(derive(Debug, Clone), states = OrderState)]
-pub struct Order<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Order;
 
 // spec'd methods
 

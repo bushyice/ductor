@@ -42,10 +42,7 @@ pub enum FileState {
 }
 
 #[unit(derive(Debug, Clone), states = FileState)]
-pub struct File<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct File;
 
 #[spec(for = Closed, with = Read)]
 impl File {

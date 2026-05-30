@@ -19,10 +19,7 @@ pub enum DocState {
 }
 
 #[unit(derive(Debug, Clone), states = DocState)]
-pub struct Doc<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Doc;
 
 #[spec(for = Open)]
 impl Doc {

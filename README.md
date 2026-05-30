@@ -166,7 +166,25 @@ generates a typed container with `new()`, `transition()`, and `transition_at()`.
 | `states = Type` | constrains the state generic to a single family |
 | `states = (A, B, ...)` | constrains to multiple families |
 
-your struct **must** have `state: State` and `caps: Caps` fields (for now).
+the macro adds `state: State` and `caps: Caps` fields + generics automatically. if your struct has extra fields annotate how they're initialized:
+
+| annotation | behavior |
+|------------|----------|
+| `#[unit(default)]` | `Default::default()` (this is the default if omitted) |
+| `#[unit(take)]` | added as a parameter to `new()` |
+| `#[unit(construct = expr)]` | computed via the given expression (can reference `state`, `caps`, and earlier fields) |
+
+```rust
+#[unit(derive(Debug))]
+pub struct Service {
+  #[unit(default)]
+  url: String,
+  #[unit(take)]
+  port: u16,
+  #[unit(construct = format!("{url}:{port}"))]
+  addr: String,
+}
+```
 
 ### `#[spec]`
 

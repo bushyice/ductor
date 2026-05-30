@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ductor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ductor-core",
  "ductor-macros",
@@ -16,7 +16,7 @@ version = "0.1.1"
 
 [[package]]
 name = "ductor-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",

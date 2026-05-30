@@ -31,10 +31,7 @@ pub enum DocumentState {
 pub struct ReviewerRights;
 
 #[unit(derive(Debug, Clone), states = DocumentState)]
-pub struct Document<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Document;
 
 #[spec(for = Blank)]
 impl Document {

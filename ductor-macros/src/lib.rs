@@ -218,17 +218,74 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
   TokenStream::from(expanded)
 }
 
+#[derive(Clone)]
+enum FieldInit {
+  Default,
+  Take,
+  Construct(syn::Expr),
+}
+
+struct UnitFieldAttr {
+  kind: FieldInit,
+}
+
+impl syn::parse::Parse for UnitFieldAttr {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let id = syn::Ident::parse_any(input)?;
+    match id.to_string().as_str() {
+      "default" => Ok(UnitFieldAttr {
+        kind: FieldInit::Default,
+      }),
+      "take" => Ok(UnitFieldAttr {
+        kind: FieldInit::Take,
+      }),
+      "construct" => {
+        input.parse::<Token![=]>()?;
+        let expr: syn::Expr = input.parse()?;
+        Ok(UnitFieldAttr {
+          kind: FieldInit::Construct(expr),
+        })
+      }
+      other => Err(syn::Error::new(
+        id.span(),
+        format!("expected `default`, `take`, or `construct`, got `{other}`"),
+      )),
+    }
+  }
+}
+
+fn get_field_init(field: &syn::Field) -> FieldInit {
+  for attr in &field.attrs {
+    if attr.path().is_ident("unit") {
+      if let Ok(parsed) = attr.parse_args::<UnitFieldAttr>() {
+        return parsed.kind;
+      }
+    }
+  }
+  FieldInit::Default
+}
+
 /// generates a typed container (unit) for states and capabilities.
 ///
-/// give it a struct with `state: State` and `caps: Caps` fields(for now), and it
-/// generates:
+/// just write your struct -- no need for `state: State` and `caps: Caps`
+/// fields or generics, the macro adds them automatically :D
+///
+/// it generates:
 /// - a `Unit` impl with associated `State`, `Caps`, and `Family` types.
 /// - a `new(state, caps)` constructor.
 /// - a `transition()` method for single-state units.
 /// - a `transition_at()` method for multi-state units.
 /// - `CanTransitionTo` impls for every allowed transition.
 ///
-/// # attr arguments
+/// if your struct has extra fields, annotate how they're initialized:
+///
+/// | annotation | behavior |
+/// |------------|----------|
+/// | `#[unit(default)]` | `Default::default()` (this is the default if omitted) |
+/// | `#[unit(take)]` | added as a parameter to `new()` |
+/// | `#[unit(construct = expr)]` | computed via the given expression (can reference `state`, `caps`, and earlier fields) |
+///
+/// # attr arguments (struct-level)
 /// - `derive(Trait, ...)`: passed through to the struct.
 /// - `states = Type` or `states = (Type, ...)`: constrains the state tuple
 ///   via `Follows` so positions match up with state families.
@@ -236,9 +293,16 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # example
 /// ```ignore
 /// #[unit(derive(Debug))]
-/// pub struct Lock<State, Caps> {
-///   pub state: State,
-///   pub caps: Caps,
+/// pub struct Lock;
+///
+/// #[unit(derive(Debug))]
+/// pub struct Service {
+///   #[unit(default)]
+///   url: String,
+///   #[unit(take)]
+///   port: u16,
+///   #[unit(construct = format!("{url}:{port}"))]
+///   addr: String,
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -254,19 +318,71 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
   }
 
   let name = &input.ident;
-  let mut generic_names = Vec::new();
-  for param in &input.generics.params {
-    if let GenericParam::Type(t) = param {
-      generic_names.push(&t.ident);
-    }
+
+  let has_state_generic = input
+    .generics
+    .params
+    .iter()
+    .any(|param| matches!(param, GenericParam::Type(t) if t.ident == "State"));
+  let has_caps_generic = input
+    .generics
+    .params
+    .iter()
+    .any(|param| matches!(param, GenericParam::Type(t) if t.ident == "Caps"));
+
+  if !has_state_generic {
+    input.generics.params.push(syn::parse_quote! { State });
+  }
+  if !has_caps_generic {
+    input.generics.params.push(syn::parse_quote! { Caps });
   }
 
-  let state_gen = generic_names
-    .get(0)
-    .expect("Orchestrator must have a State generic");
-  let caps_gen = generic_names
-    .get(1)
-    .expect("Orchestrator must have a Caps generic");
+  let mut all_custom: Vec<(syn::Ident, syn::Type, FieldInit)> = Vec::new();
+
+  match &mut input.fields {
+    Fields::Unit => {
+      let dummy: syn::ItemStruct = syn::parse_quote! {
+        struct Dummy {
+          pub state: State,
+          pub caps: Caps,
+        }
+      };
+      input.fields = dummy.fields;
+    }
+    Fields::Named(named) => {
+      let mut custom_raw: Vec<syn::Field> = named
+        .named
+        .iter()
+        .filter(|f| {
+          f.ident
+            .as_ref()
+            .map_or(true, |id| id != "state" && id != "caps")
+        })
+        .cloned()
+        .collect();
+
+      for f in &custom_raw {
+        if let Some(ref ident) = f.ident {
+          let init = get_field_init(f);
+          all_custom.push((ident.clone(), f.ty.clone(), init));
+        }
+      }
+
+      for f in &mut custom_raw {
+        f.attrs.retain(|a| !a.path().is_ident("unit"));
+      }
+
+      named.named.clear();
+      named.named.push(syn::parse_quote! { pub state: State });
+      named.named.push(syn::parse_quote! { pub caps: Caps });
+      named.named.extend(custom_raw);
+    }
+    Fields::Unnamed(_) => {
+      return syn::Error::new(input.ident.span(), "#[unit] does not support tuple structs")
+        .to_compile_error()
+        .into();
+    }
+  }
 
   let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
   let mut where_clause = where_clause
@@ -280,8 +396,96 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     where_clause
       .predicates
-      .push(syn::parse_quote! { #state_gen: ductor::Follows<#follows_ty> });
+      .push(syn::parse_quote! { State: ductor::Follows<#follows_ty> });
   }
+
+  let custom_type_idents: Vec<&Ident> = input
+    .generics
+    .params
+    .iter()
+    .filter_map(|param| {
+      if let GenericParam::Type(t) = param {
+        if t.ident != "State" && t.ident != "Caps" {
+          return Some(&t.ident);
+        }
+      }
+      None
+    })
+    .collect();
+
+  let type_args_with_state_replaced = |replacement: &Ident| -> Vec<proc_macro2::TokenStream> {
+    input
+      .generics
+      .params
+      .iter()
+      .map(|param| match param {
+        GenericParam::Type(t) if t.ident == "State" => quote! { #replacement },
+        GenericParam::Type(t) => {
+          let id = &t.ident;
+          quote! { #id }
+        }
+        GenericParam::Lifetime(l) => {
+          let lt = &l.lifetime;
+          quote! { #lt }
+        }
+        GenericParam::Const(c) => {
+          let id = &c.ident;
+          quote! { #id }
+        }
+      })
+      .collect()
+  };
+
+  let all_type_args: Vec<proc_macro2::TokenStream> =
+    type_args_with_state_replaced(&format_ident!("State"));
+  let for_type_args: Vec<proc_macro2::TokenStream> =
+    type_args_with_state_replaced(&format_ident!("From"));
+  let to_type_args: Vec<proc_macro2::TokenStream> =
+    type_args_with_state_replaced(&format_ident!("To"));
+  let out_type_args: Vec<proc_macro2::TokenStream> =
+    type_args_with_state_replaced(&format_ident!("Out"));
+
+  let default_fields: Vec<(syn::Ident, syn::Type)> = all_custom
+    .iter()
+    .filter_map(|(id, ty, init)| {
+      matches!(init, FieldInit::Default).then(|| (id.clone(), ty.clone()))
+    })
+    .collect();
+  let take_fields: Vec<(syn::Ident, syn::Type)> = all_custom
+    .iter()
+    .filter_map(|(id, ty, init)| matches!(init, FieldInit::Take).then(|| (id.clone(), ty.clone())))
+    .collect();
+
+  let new_where_preds: Vec<syn::WherePredicate> = default_fields
+    .iter()
+    .map(|(_, ty)| syn::parse_quote! { #ty: ::core::default::Default })
+    .collect();
+  let new_where: proc_macro2::TokenStream = if new_where_preds.is_empty() {
+    quote! {}
+  } else {
+    quote! { where #(#new_where_preds),* }
+  };
+
+  let take_params: Vec<proc_macro2::TokenStream> = take_fields
+    .iter()
+    .map(|(ident, ty)| quote! { #ident: #ty })
+    .collect();
+
+  let field_lets: Vec<proc_macro2::TokenStream> = all_custom
+    .iter()
+    .map(|(ident, ty, init)| match init {
+      FieldInit::Default => quote! { let #ident: #ty = ::core::default::Default::default(); },
+      FieldInit::Take => quote! {},
+      FieldInit::Construct(expr) => quote! { let #ident = #expr; },
+    })
+    .collect();
+
+  let field_refs: Vec<&syn::Ident> = all_custom.iter().map(|(id, _, _)| id).collect();
+
+  let custom_field_moves: Vec<proc_macro2::TokenStream> = all_custom
+    .iter()
+    .map(|(ident, _, _)| quote! { #ident: self.#ident })
+    .collect();
 
   let family_name = format_ident!("{}Family", name);
 
@@ -293,8 +497,8 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
     impl ductor::StateFamily for #family_name {}
 
     impl #impl_generics ductor::Unit for #name #type_generics #where_clause {
-      type State = #state_gen;
-      type Caps = #caps_gen;
+      type State = State;
+      type Caps = Caps;
       type Family = #family_name;
 
       fn state(&self) -> &Self::State { &self.state }
@@ -302,21 +506,27 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     impl #impl_generics #name #type_generics #where_clause {
-      pub fn new(state: #state_gen, caps: #caps_gen) -> Self {
-        Self { state, caps }
+      pub fn new(state: State, caps: Caps, #(#take_params),*) -> Self
+      #new_where
+      {
+        #(#field_lets)*
+        Self {
+          state,
+          caps,
+          #(#field_refs,)*
+        }
       }
 
-      pub fn transition<Target, CapMarker, F>(self, f: F) -> <Self as ductor::CanTransitionTo<Target, #caps_gen, F, CapMarker>>::Out
+      pub fn transition<Target, CapMarker, F>(self, f: F) -> <Self as ductor::CanTransitionTo<Target, Caps, F, CapMarker>>::Out
       where
-        Self: ductor::CanTransitionTo<Target, #caps_gen, F, CapMarker>,
+        Self: ductor::CanTransitionTo<Target, Caps, F, CapMarker>,
       {
-        <Self as ductor::CanTransitionTo<Target, #caps_gen, F, CapMarker>>::perform_transition(self, f)
+        <Self as ductor::CanTransitionTo<Target, Caps, F, CapMarker>>::perform_transition(self, f)
       }
     }
 
-
-    impl<State, Caps> #name<State, Caps> {
-      pub fn transition_at<From, To, Marker, CapMarker, Out, F>(self, f: F) -> #name<Out, Caps>
+    impl<#(#custom_type_idents,)* State, Caps> #name <#(#all_type_args),*> {
+      pub fn transition_at<From, To, Marker, CapMarker, Out, F>(self, f: F) -> #name <#(#out_type_args),*>
       where
         From: ductor::IsState,
         To: ductor::IsState,
@@ -331,29 +541,30 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
         #name {
           state,
           caps: self.caps,
+          #(#custom_field_moves),*
         }
       }
     }
 
-
-
-    impl<#caps_gen, F, From, To, CapMarker> ductor::CanTransitionTo<To, #caps_gen, F, CapMarker> for #name<From, #caps_gen>
+    impl<#(#custom_type_idents,)* Caps, F, From, To, CapMarker>
+      ductor::CanTransitionTo<To, Caps, F, CapMarker>
+      for #name <#(#for_type_args),*>
     where
       From: ductor::IsState,
       To: ductor::IsState,
       From::Family: ductor::Transition<From, To>,
-      #caps_gen: ductor::Satisfies<<From::Family as ductor::Transition<From, To>>::Requirements, CapMarker>,
+      Caps: ductor::Satisfies<<From::Family as ductor::Transition<From, To>>::Requirements, CapMarker>,
       F: FnOnce(From) -> To,
     {
-      type Out = #name<To, #caps_gen>;
+      type Out = #name <#(#to_type_args),*>;
       fn perform_transition(self, f: F) -> Self::Out {
         #name {
           state: f(self.state),
           caps: self.caps,
+          #(#custom_field_moves),*
         }
       }
     }
-
   };
   TokenStream::from(expanded)
 }

@@ -40,10 +40,7 @@ pub enum AuthState {
 // `states = ConnectionState` says the State generic must be a single state
 // from the ConnectionState family.
 #[unit(derive(Debug, Clone), states = ConnectionState)]
-pub struct Network<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Network;
 
 // methods available when Network is Disconnected and we've got NetCap.
 #[spec(for = Disconnected, with = NetCap)]
@@ -61,10 +58,7 @@ impl Network {
 // `states = (NetworkState, AuthState)` means position 0 is from NetworkState
 // family and position 1 from AuthState family.
 #[unit(derive(Debug, Clone), states = (NetworkState, AuthState))]
-pub struct MyService<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct MyService;
 
 // spec: NetworkDown, any AuthState, needs NetCap.
 // `()` is a wildcard for "any state".

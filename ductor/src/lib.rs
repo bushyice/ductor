@@ -53,8 +53,8 @@
 //!
 //! - **state / statefamily**: a state machine is an enum (the family). each
 //!   variant becomes a state struct that can carry data.
-//! - **unit**: a generic struct with `state: State` and `caps: Caps`. the
-//!   macros generate impls so transitions and cap checks happen at the type level.
+//! - **unit**: a struct you define -- the macro adds `state: State` and `caps: Caps`
+//!   automatically and generates impls so transitions and cap checks happen at the type level.
 //! - **capability**: a marker type a unit carries. transitions and `#[spec]`
 //!   blocks can require caps then the compiler checks them all.
 //! - **tuple states**: one unit can manage multiple state machines at once

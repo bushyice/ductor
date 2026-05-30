@@ -20,10 +20,7 @@ pub enum EngineState {
 }
 
 #[unit(derive(Debug, Clone), states = EngineState)]
-pub struct Engine<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Engine;
 
 #[spec(for = Stopped, with = (IgnitionKey, Fuel))]
 impl Engine {
@@ -57,10 +54,7 @@ pub enum TransmissionState {
 }
 
 #[unit(derive(Debug, Clone), states = TransmissionState)]
-pub struct Transmission<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Transmission;
 
 #[spec(for = Neutral)]
 impl Transmission {
@@ -73,10 +67,7 @@ impl Transmission {
 // - vehicle: combines engine + transmission
 
 #[unit(derive(Debug, Clone), states = (EngineState, TransmissionState))]
-pub struct Vehicle<S, C> {
-  pub state: S,
-  pub caps: C,
-}
+pub struct Vehicle;
 
 #[spec(for = (Stopped, Neutral), with = (IgnitionKey, Fuel))]
 impl Vehicle {
