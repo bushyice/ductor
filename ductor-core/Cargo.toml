@@ -1,9 +1,9 @@
 [package]
 name = "ductor-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-description = "ductor"
+description = "zero-cost typestate lib: core traits and helpers"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/bushyice/ductor"
+repository = "https://tangled.org/bushyice.com/ductor"
 
 [dependencies]

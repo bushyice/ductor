@@ -12,14 +12,20 @@ use syn::{
 struct AttrArgs {
   derives: Vec<syn::Path>,
   states: Option<SpecValue>,
+  as_caps: Option<SpecValue>,
 }
 
 impl Parse for AttrArgs {
   fn parse(input: ParseStream) -> syn::Result<Self> {
     let mut derives = Vec::new();
     let mut states = None;
+    let mut as_caps = None;
     while !input.is_empty() {
-      if input.peek(Ident) || input.peek(Token![type]) || input.peek(Token![const]) {
+      if input.peek(Ident)
+        || input.peek(Token![type])
+        || input.peek(Token![const])
+        || input.peek(Token![as])
+      {
         let id = Ident::parse_any(input)?;
         if id == "derive" {
           let content;
@@ -29,16 +35,12 @@ impl Parse for AttrArgs {
           derives.extend(paths);
         } else if id == "states" {
           input.parse::<Token![=]>()?;
-          let val = if input.peek(syn::token::Paren) {
-            let content;
-            parenthesized!(content in input);
-            let tys: Punctuated<syn::Type, Token![,]> =
-              content.parse_terminated(syn::Type::parse, Token![,])?;
-            SpecValue::Tuple(tys.into_iter().collect())
-          } else {
-            SpecValue::Single(input.parse()?)
-          };
+          let val = parse_spec_value(input)?;
           states = Some(val);
+        } else if id == "as" {
+          input.parse::<Token![=]>()?;
+          let val = parse_spec_value(input)?;
+          as_caps = Some(val);
         }
       }
       if input.peek(Token![,]) {
@@ -47,7 +49,23 @@ impl Parse for AttrArgs {
         break;
       }
     }
-    Ok(AttrArgs { derives, states })
+    Ok(AttrArgs {
+      derives,
+      states,
+      as_caps,
+    })
+  }
+}
+
+fn parse_spec_value(input: ParseStream) -> syn::Result<SpecValue> {
+  if input.peek(syn::token::Paren) {
+    let content;
+    parenthesized!(content in input);
+    let tys: Punctuated<syn::Type, Token![,]> =
+      content.parse_terminated(syn::Type::parse, Token![,])?;
+    Ok(SpecValue::Tuple(tys.into_iter().collect()))
+  } else {
+    Ok(SpecValue::Single(input.parse()?))
   }
 }
 
@@ -89,6 +107,31 @@ impl Parse for TransitionAttr {
   }
 }
 
+/// turns an enum into a state machine.
+///
+/// each variant becomes its own struct. the enum name becomes a family struct
+/// implementing `StateFamily`. every variant gets an `IsState` impl.
+///
+/// if you slap `#[transition(Target, requires = Type)]` on a variant, it
+/// generates a `Transition` impl with optional capability requirements. :D
+///
+/// # attr arguments
+/// - `derive(Trait, ...)`: passes derives through to every generated struct.
+///
+/// # variant attrs
+/// - `#[transition(Target)]`: marks a valid transition from this state to `Target`.
+/// - `#[transition(Target, requires = Type)]`: same but needs a capability.
+///
+/// # example
+/// ```ignore
+/// #[typestate(derive(Debug))]
+/// pub enum Door {
+///   #[transition(Closed)]
+///   Open,
+///   #[transition(Open)]
+///   Closed,
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
   let args = parse_macro_input!(attr as AttrArgs);
@@ -175,6 +218,29 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
   TokenStream::from(expanded)
 }
 
+/// generates a typed container (unit) for states and capabilities.
+///
+/// give it a struct with `state: State` and `caps: Caps` fields(for now), and it
+/// generates:
+/// - a `Unit` impl with associated `State`, `Caps`, and `Family` types.
+/// - a `new(state, caps)` constructor.
+/// - a `transition()` method for single-state units.
+/// - a `transition_at()` method for multi-state units.
+/// - `CanTransitionTo` impls for every allowed transition.
+///
+/// # attr arguments
+/// - `derive(Trait, ...)`: passed through to the struct.
+/// - `states = Type` or `states = (Type, ...)`: constrains the state tuple
+///   via `Follows` so positions match up with state families.
+///
+/// # example
+/// ```ignore
+/// #[unit(derive(Debug))]
+/// pub struct Lock<State, Caps> {
+///   pub state: State,
+///   pub caps: Caps,
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
   let args = parse_macro_input!(attr as AttrArgs);
@@ -292,6 +358,31 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
   TokenStream::from(expanded)
 }
 
+/// marks a struct as a capability type.
+///
+/// implements `Capability` for the struct. passes through any `derive(...)`.
+///
+/// with `as = (A, B, ...)` it becomes a **parent capability**: having it
+/// in your `Caps` tuple satisfies requirement bounds for `A`, `B`, etc. at
+/// compile time. so you don't need to list all the little ones individually :D
+///
+/// # attr arguments
+/// - `derive(Trait, ...)`: passes derives through.
+/// - `as = Type` or `as = (Type, ...)`: proxy targets this cap satisfies.
+///
+/// # example
+/// ```ignore
+/// #[cap(derive(Debug, Clone))]
+/// pub struct Read;
+///
+/// #[cap(derive(Debug, Clone))]
+/// pub struct Write;
+///
+/// #[cap(as = (Read, Write))]
+/// pub struct Admin;
+///
+/// // caps!(Admin) now satisfies both Read and Write requirements.
+/// ```
 #[proc_macro_attribute]
 pub fn cap(attr: TokenStream, item: TokenStream) -> TokenStream {
   let args = parse_macro_input!(attr as AttrArgs);
@@ -305,13 +396,93 @@ pub fn cap(attr: TokenStream, item: TokenStream) -> TokenStream {
   }
 
   let name = &input.ident;
-  quote! {
+  let mut output = quote! {
     #input
     impl ductor::Capability for #name {}
+  };
+
+  if let Some(ref as_caps) = args.as_caps {
+    let targets: Vec<&syn::Type> = match as_caps {
+      SpecValue::Single(ty) => vec![ty],
+      SpecValue::Tuple(tys) => tys.iter().collect(),
+    };
+    for target in &targets {
+      let proxy_impls = gen_as_proxy_impls(name, target);
+      output.extend(proxy_impls);
+    }
   }
-  .into()
+
+  TokenStream::from(output)
 }
 
+fn gen_as_proxy_impls(name: &Ident, target: &syn::Type) -> proc_macro2::TokenStream {
+  let max_size: usize = 7;
+  let as_markers: &[Ident] = &[
+    format_ident!("IsAs0"),
+    format_ident!("IsAs1"),
+    format_ident!("IsAs2"),
+    format_ident!("IsAs3"),
+    format_ident!("IsAs4"),
+    format_ident!("IsAs5"),
+    format_ident!("IsAs6"),
+  ];
+
+  let mut impls = proc_macro2::TokenStream::new();
+
+  for size in 1..=max_size {
+    for pos in 0..size {
+      let before: Vec<Ident> = (0..pos).map(|i| format_ident!("T{i}")).collect();
+      let after: Vec<Ident> = (pos + 1..size).map(|i| format_ident!("T{i}")).collect();
+
+      let tuple_types: Vec<_> = {
+        let mut types = Vec::new();
+        for b in &before {
+          types.push(quote! { #b });
+        }
+        types.push(quote! { #name });
+        for a in &after {
+          types.push(quote! { #a });
+        }
+        types
+      };
+
+      let marker = &as_markers[pos];
+      impls.extend(quote! {
+        impl<#(#before,)* #(#after,)*>
+          ductor::Satisfies<#target, ductor::#marker>
+          for ductor::Caps<(#(#tuple_types,)*)>
+        {}
+      });
+    }
+  }
+
+  impls
+}
+
+/// attaches an `impl` block to a specific state/capability combo.
+///
+/// the `for` param says which state (or state tuple) the methods show up for.
+/// the `with` param specifies capability requirements. use `_` or `()` as a
+/// wildcard for "any state" or "any cap".
+///
+/// methods with `#[transit]` inside a `#[spec]` block get their return types
+/// rewritten to reflect the new state and caps.
+///
+/// # attr arguments
+/// - `for = StateType` -- single-state spec.
+/// - `for = (A, B, ...)` -- multi-state spec.
+/// - `with = CapType` -- single-cap requirement.
+/// - `with = (A, B, ...)` -- multi-cap requirement.
+/// - use `_` or `()` as a wildcard.
+///
+/// # example
+/// ```ignore
+/// #[spec(for = Connected, with = NetCap)]
+/// impl Network {
+///   #[transit(to = Disconnected)]
+///   pub fn disconnect(self) { ... }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn spec(attr: TokenStream, item: TokenStream) -> TokenStream {
   let args = match syn::parse::<SpecArgs>(attr) {
