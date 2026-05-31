@@ -646,3 +646,69 @@ pub trait CanTransitionAt<From, To, Caps, F> {
   /// do the indexed transition.
   fn perform_transition(self, f: F) -> Self::Out;
 }
+
+/// a type-erased state that remembers its family.
+///
+/// `Of<F>` represents "some state in family F" without revealing
+/// the exact variant. you erase the concrete type with `into_unknown()`
+/// on any unit, and recover it with `as_some::<S>()` / `into_some::<S>()`.
+pub struct Of<F: StateFamily> {
+  inner: Box<dyn core::any::Any>,
+  _family: core::marker::PhantomData<F>,
+}
+
+impl<F: StateFamily> Of<F> {
+  /// wrap a concrete state into the erased wrapper.
+  ///
+  /// checked at compile time: `S` must be a state belonging to family `F`.
+  pub fn new<S: IsState<Family = F> + 'static>(state: S) -> Self {
+    Of {
+      inner: Box::new(state),
+      _family: core::marker::PhantomData,
+    }
+  }
+
+  /// wrap a value without checking the family.
+  ///
+  /// used internally by `into_unknown()` where the family is known to be
+  /// correct by construction (it uses the unit's own family marker).
+  pub fn new_unchecked<S: 'static>(state: S) -> Self {
+    Of {
+      inner: Box::new(state),
+      _family: core::marker::PhantomData,
+    }
+  }
+
+  /// borrow the inner value as a specific state.
+  ///
+  /// returns `None` if the concrete type doesn't match.
+  pub fn as_some<S: IsState<Family = F> + 'static>(&self) -> Option<&S> {
+    let any: &dyn core::any::Any = &*self.inner;
+    any.downcast_ref::<S>()
+  }
+
+  /// unwrap the inner value as a specific state.
+  ///
+  /// returns `None` if the concrete type doesn't match
+  /// (the inner value is consumed either way).
+  pub fn into_some<S: IsState<Family = F> + 'static>(self) -> Option<S> {
+    let any = self.inner;
+    any.downcast::<S>().ok().map(|b| *b)
+  }
+
+  /// check whether the inner value is a specific state.
+  pub fn is<S: IsState<Family = F> + 'static>(&self) -> bool {
+    let any: &dyn core::any::Any = &*self.inner;
+    any.downcast_ref::<S>().is_some()
+  }
+}
+
+impl<F: StateFamily> IsState for Of<F> {
+  type Family = F;
+}
+
+impl<F: StateFamily> core::fmt::Debug for Of<F> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "Of<{}>", core::any::type_name::<F>())
+  }
+}

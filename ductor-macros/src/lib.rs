@@ -445,6 +445,37 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
   let out_type_args: Vec<proc_macro2::TokenStream> =
     type_args_with_state_replaced(&format_ident!("Out"));
 
+  let family_name = format_ident!("{}Family", name);
+
+  let type_args_with_state_ts =
+    |replacement: proc_macro2::TokenStream| -> Vec<proc_macro2::TokenStream> {
+      input
+        .generics
+        .params
+        .iter()
+        .map(|param| match param {
+          GenericParam::Type(t) if t.ident == "State" => replacement.clone(),
+          GenericParam::Type(t) => {
+            let id = &t.ident;
+            quote! { #id }
+          }
+          GenericParam::Lifetime(l) => {
+            let lt = &l.lifetime;
+            quote! { #lt }
+          }
+          GenericParam::Const(c) => {
+            let id = &c.ident;
+            quote! { #id }
+          }
+        })
+        .collect()
+    };
+
+  let s_args = type_args_with_state_ts(quote! { S });
+  let of_args = type_args_with_state_ts(quote! { ductor::Of<<S as ductor::IsState>::Family> });
+  let of_family_args = type_args_with_state_ts(quote! { ductor::Of<#family_name> });
+  let of_f_args = type_args_with_state_ts(quote! { ductor::Of<F> });
+
   let default_fields: Vec<(syn::Ident, syn::Type)> = all_custom
     .iter()
     .filter_map(|(id, ty, init)| {
@@ -486,8 +517,6 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
     .iter()
     .map(|(ident, _, _)| quote! { #ident: self.#ident })
     .collect();
-
-  let family_name = format_ident!("{}Family", name);
 
   let expanded = quote! {
     #input
@@ -544,6 +573,73 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
           #(#custom_field_moves),*
         }
       }
+
+      /// erase a single component in a state tuple to `Of<Family>`.
+      ///
+      /// like `transition_at`, but replaces the target with its erased form.
+      /// the other tuple positions stay unchanged.
+      ///
+      /// # example
+      /// ```ignore
+      /// // States<(LoggedIn, Connected)> -> States<(Of<Auth>, Connected)>
+      /// svc.into_unknown_at::<LoggedIn, _, _>()
+      /// ```
+      pub fn into_unknown_at<From, Marker, Out>(self) -> #name <Out, Caps>
+      where
+        From: ductor::IsState + 'static,
+        State: ductor::ReplaceStateAt<Marker, From, ductor::Of<<From as ductor::IsState>::Family>, Out>,
+      {
+        let state =
+          <State as ductor::ReplaceStateAt<Marker, From, ductor::Of<<From as ductor::IsState>::Family>, Out>>::replace_with(self.state, |from| ductor::Of::new(from));
+
+        #name {
+          state,
+          caps: self.caps,
+          #(#custom_field_moves),*
+        }
+      }
+
+      /// check whether the erased component at a tuple position is `S`.
+      pub fn is_at<S, Marker>(&self) -> bool
+      where
+        S: ductor::IsState + 'static,
+        State: ductor::HasState<ductor::Of<<S as ductor::IsState>::Family>, Marker>,
+      {
+        let of: &ductor::Of<<S as ductor::IsState>::Family> =
+          <State as ductor::HasState<ductor::Of<<S as ductor::IsState>::Family>, Marker>>::get_state_ref(&self.state);
+        of.is::<S>()
+      }
+
+      /// recover a concrete state at a specific tuple position.
+      ///
+      /// symmetric with `into_unknown_at`. checks at runtime whether the
+      /// erased component is `S` and returns `None` if it isn't.
+      ///
+      /// # example
+      /// ```ignore
+      /// // States<(Of<Auth>, Connected)> -> Option<States<(LoggedIn, Connected)>>
+      /// svc.clone().trim_unknown_at::<LoggedIn, _, _>()
+      /// ```
+      pub fn trim_unknown_at<S, Marker, Out>(self) -> Option<#name <Out, Caps>>
+      where
+        S: ductor::IsState + 'static,
+        State: ductor::HasState<ductor::Of<<S as ductor::IsState>::Family>, Marker>
+          + ductor::ReplaceStateAt<Marker, ductor::Of<<S as ductor::IsState>::Family>, S, Out>,
+      {
+        let is_match = {
+          let of: &ductor::Of<<S as ductor::IsState>::Family> =
+            <State as ductor::HasState<ductor::Of<<S as ductor::IsState>::Family>, Marker>>::get_state_ref(&self.state);
+          of.is::<S>()
+        };
+        if !is_match { return None; }
+        let new_state =
+          <State as ductor::ReplaceStateAt<Marker, ductor::Of<<S as ductor::IsState>::Family>, S, Out>>::replace_with(self.state, |of| of.into_some::<S>().unwrap());
+        Some(#name {
+          state: new_state,
+          caps: self.caps,
+          #(#custom_field_moves,)*
+        })
+      }
     }
 
     impl<#(#custom_type_idents,)* Caps, F, From, To, CapMarker>
@@ -563,6 +659,69 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
           caps: self.caps,
           #(#custom_field_moves),*
         }
+      }
+    }
+
+    impl<#(#custom_type_idents,)* S: ductor::IsState + 'static, Caps> #name <#(#s_args),*>
+    {
+      /// erase the concrete state into `Of<Family>`.
+      ///
+      /// the returned unit keeps the same caps and custom fields but
+      /// no longer reveals which variant of the state machine it is.
+      /// recover with `as_some::<S>()` / `into_some::<S>()`.
+      pub fn into_unknown(self) -> #name <#(#of_args),*> {
+        #name {
+          state: ductor::Of::new(self.state),
+          caps: self.caps,
+          #(#custom_field_moves,)*
+        }
+      }
+    }
+
+    impl<#(#custom_type_idents,)* State: 'static, Caps> #name <#(#all_type_args),*>
+    {
+      /// erase any state (including `States<(...)>` tuples) into `Of<UnitFamily>`.
+      ///
+      /// unlike `into_unknown()`, this doesn't require `IsState`, so it works
+      /// for tuple states too. the family marker is the unit's own private family.
+      pub fn into_unknown_all(self) -> #name <#(#of_family_args),*> {
+        #name {
+          state: ductor::Of::new_unchecked(self.state),
+          caps: self.caps,
+          #(#custom_field_moves,)*
+        }
+      }
+    }
+
+    impl<#(#custom_type_idents,)* F: ductor::StateFamily, Caps> #name <#(#of_f_args),*> {
+      /// borrow the state as a specific variant.
+      ///
+      /// returns `None` if the concrete type doesn't match.
+      pub fn as_some<S: ductor::IsState<Family = F> + 'static>(&self) -> Option<&S> {
+        self.state.as_some::<S>()
+      }
+
+      /// check whether the state is a specific variant.
+      pub fn is<S: ductor::IsState<Family = F> + 'static>(&self) -> bool {
+        self.state.is::<S>()
+      }
+
+      /// unwrap into a concrete state variant.
+      ///
+      /// returns `None` if the concrete type doesn't match
+      /// (the unit is consumed either way).
+      pub fn into_some<S: ductor::IsState<Family = F> + 'static>(self) -> Option<#name <#(#s_args),*>> {
+        let state = self.state.into_some::<S>()?;
+        Some(#name {
+          state,
+          caps: self.caps,
+          #(#custom_field_moves,)*
+        })
+      }
+
+      /// recover the concrete state (symmetric with `into_unknown`).
+      pub fn trim_unknown<S: ductor::IsState<Family = F> + 'static>(self) -> Option<#name <#(#s_args),*>> {
+        self.into_some::<S>()
       }
     }
   };
