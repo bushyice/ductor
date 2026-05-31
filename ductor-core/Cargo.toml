@@ -1,6 +1,6 @@
 [package]
 name = "ductor-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "zero-cost typestate lib: core traits and helpers"
 license = "MIT OR Apache-2.0"

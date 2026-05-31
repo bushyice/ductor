@@ -124,6 +124,58 @@ conn.send(b"hello"); // works
 
 use `_` or `()` as wildcards for "any state" or "any cap".
 
+### typestate erasure (unknown states)
+
+sometimes you need to put units with different states into a collection, pass them through a generic API, or hold onto one without knowing its exact variant. **`Of<F>`** wraps any state belonging to family `F` behind a `Box<dyn Any>`, erasing the concrete type while remembering the family.
+
+```rust
+use ductor::*;
+
+// erase a single-state unit:
+let erased: Lock<Of<Door>, Caps<(HasKey,)>> = lock.into_unknown();
+
+// check / borrow / recover at runtime:
+assert!(erased.is::<Closed>());
+let _: Option<&Closed> = erased.as_some::<Closed>();
+let back: Option<Lock<Closed, Caps<(HasKey,)>>> = erased.into_some();
+```
+
+**methods on units with `Of<F>` state:**
+
+| method | what it does |
+|--------|-------------|
+| `is::<S>()` | checks whether the erased state is `S` |
+| `as_some::<S>()` | borrows as `Option<&S>` |
+| `into_some::<S>()` | consumes the unit, returns `Option<Unit<S, Caps>>` |
+| `trim_unknown::<S>()` | alias for `into_some` |
+
+**erasing a single component** in a tuple-state unit:
+
+```rust
+// States<(LoggedIn, Connected)> -> States<(Of<Auth>, Connected)>
+let svc = svc.into_unknown_at::<LoggedIn, _, _>();
+let erased: Service<States<(Of<Auth>, Connected)>, _> = svc;
+
+// check at a position:
+assert!(svc.is_at::<LoggedIn, _>());
+
+// recover at a position:
+let svc: Service<States<(LoggedIn, Connected)>, _> = svc.trim_unknown_at::<LoggedIn, _, _>().unwrap();
+```
+
+**creating an `Of<F>` directly:**
+
+```rust
+let erased: Of<Door> = Of::new(Closed);
+assert!(erased.is::<Closed>());
+```
+
+**erasing everything** (any state, even tuples, into the unit's own private family):
+
+```rust
+let totally_erased: Lock<Of<LockFamily>, _> = lock.into_unknown_all();
+```
+
 ## macro reference
 
 ### `#[typestate]`
@@ -207,9 +259,12 @@ run any with `cargo run --example <name>`.
 | example | file | what it shows |
 |---------|------|---------------|
 | `simple` | `examples/simple.rs` | the bare minimum door lock thing |
+| `raw_example` | `examples/raw_example.rs` | same as `simple` but without *any* macros, all traits impl'd by hand |
 | `base` | `examples/base.rs` | multi-state network service with spec blocks, the works |
 | `state_data` | `examples/state_data.rs` | states that carry actual data fields through a workflow |
 | `capabilities` | `examples/capabilities.rs` | gating operations behind capabilities, compile-time checks |
 | `multi_unit` | `examples/multi_unit.rs` | composing multiple units into a bigger state machine |
 | `branching` | `examples/branching.rs` | one-to-many transitions from a single source state |
 | `proxy_cap` | `examples/proxy_cap.rs` | parent capability delegation with `#[cap(as = ...)]` |
+| `unknown_state` | `examples/unknown_state.rs` | type erasure with `Of<>`, `.into_unknown()`, `.is_at()`, `.trim_unknown_at()` |
+| `field_inits` | `examples/field_inits.rs` | custom fields inside of units |

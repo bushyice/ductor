@@ -546,6 +546,16 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
       }
 
+      /// transition from the current state into `Target`.
+      ///
+      /// the closure receives the current state (consuming it) and returns
+      /// the new state. only compiles when a matching `#[transition(Target)]`
+      /// exists on the current variant and all required capabilities are met.
+      ///
+      /// # example
+      /// ```ignore
+      /// lock.transition(|Closed| Open)
+      /// ```
       pub fn transition<Target, CapMarker, F>(self, f: F) -> <Self as ductor::CanTransitionTo<Target, Caps, F, CapMarker>>::Out
       where
         Self: ductor::CanTransitionTo<Target, Caps, F, CapMarker>,
@@ -555,6 +565,20 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     impl<#(#custom_type_idents,)* State, Caps> #name <#(#all_type_args),*> {
+      /// transition one component of a multi-state tuple.
+      ///
+      /// `From` / `To` specify the state change, `Marker` picks the tuple
+      /// position (`Is0`, `Is1`, …). other positions are unchanged.
+      /// only compiles when the component's family declares the transition
+      /// and all required capabilities are present.
+      ///
+      /// # example
+      /// ```ignore
+      /// service.transition_at::<Connected, Disconnected, Is1, _, _, _>(|c| {
+      ///   let Connected = c;
+      ///   Disconnected
+      /// })
+      /// ```
       pub fn transition_at<From, To, Marker, CapMarker, Out, F>(self, f: F) -> #name <#(#out_type_args),*>
       where
         From: ductor::IsState,
