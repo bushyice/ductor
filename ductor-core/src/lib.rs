@@ -1,3 +1,9 @@
+#![no_std]
+
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 /// TODO: Extend limits beyond 7
 
 /// marks something as a capability type.
@@ -184,9 +190,11 @@ macro_rules! caps {
 /// # example
 /// ```
 /// use ductor_core::*;
+/// struct MyFamily;
+/// impl StateFamily for MyFamily {}
 /// #[derive(Debug, Clone)]
 /// struct MyState;
-/// impl IsState for MyState { type Family = (); }
+/// impl IsState for MyState { type Family = MyFamily; }
 /// let s = states!(MyState);
 /// ```
 #[macro_export]
