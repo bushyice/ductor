@@ -64,6 +64,9 @@ impl<State, Caps> Unit for Lock<State, Caps> {
   fn state(&self) -> &State {
     &self.state
   }
+  fn state_mut(&mut self) -> &mut State {
+    &mut self.state
+  }
   fn caps(&self) -> &Caps {
     &self.caps
   }

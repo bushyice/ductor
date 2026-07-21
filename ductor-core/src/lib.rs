@@ -291,6 +291,8 @@ pub trait HasState<Target, IndexMarker> {
   fn get_state(self) -> Target;
   /// borrow the state from the tuple.
   fn get_state_ref(&self) -> &Target;
+  /// mutably borrow the state from the tuple.
+  fn get_state_mut(&mut self) -> &mut Target;
 }
 
 /// family-based state access on a state tuple.
@@ -390,6 +392,14 @@ pub trait StateAccess: Sized {
   }
 
   #[inline(always)]
+  fn get_mut<Target, IndexMarker>(&mut self) -> &mut Target
+  where
+    Self: HasState<Target, IndexMarker>,
+  {
+    HasState::<Target, IndexMarker>::get_state_mut(self)
+  }
+
+  #[inline(always)]
   fn select<Family, Marker>(&self, _: Family) -> &<Self as HasFamily<Family, Marker>>::State
   where
     Self: HasFamily<Family, Marker>,
@@ -405,6 +415,9 @@ impl<S: IsState> HasState<S, IsSelf> for S {
     self
   }
   fn get_state_ref(&self) -> &S {
+    self
+  }
+  fn get_state_mut(&mut self) -> &mut S {
     self
   }
 }
@@ -457,6 +470,10 @@ macro_rules! impl_is_state {
       #[inline(always)]
       fn get_state_ref(&self) -> &$Head {
         &self.0.$IdxHead
+      }
+      #[inline(always)]
+      fn get_state_mut(&mut self) -> &mut $Head {
+        &mut self.0.$IdxHead
       }
     }
 
@@ -664,6 +681,8 @@ pub trait Unit {
 
   /// borrow the current state.
   fn state(&self) -> &Self::State;
+  /// mutably borrow the current state.
+  fn state_mut(&mut self) -> &mut Self::State;
   /// borrow the current capabilities.
   fn caps(&self) -> &Self::Caps;
 }

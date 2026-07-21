@@ -604,6 +604,7 @@ pub fn unit(attr: TokenStream, item: TokenStream) -> TokenStream {
       type Family = #family_name;
 
       fn state(&self) -> &Self::State { &self.state }
+      fn state_mut(&mut self) -> &mut Self::State { &mut self.state }
       fn caps(&self) -> &Self::Caps { &self.caps }
     }
 
