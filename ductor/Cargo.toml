@@ -1,6 +1,6 @@
 [package]
 name = "ductor"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "zero-cost typestate lib"
 license = "MIT OR Apache-2.0"
@@ -9,4 +9,4 @@ readme = "../README.md"
 
 [dependencies]
 ductor-core = { version = "0.1.4", path = "../ductor-core" }
-ductor-macros = { version = "0.1.5", path = "../ductor-macros" }
+ductor-macros = { version = "0.1.6", path = "../ductor-macros" }

@@ -192,17 +192,23 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
   for variant in &input.variants {
     let variant_name = &variant.ident;
     let fields = &variant.fields;
-    let mut derives = derives.clone();
+    let mut variant_paths = args.derives.clone();
+    let mut passthrough_attrs = Vec::new();
 
     for attr in &variant.attrs {
-      if attr.path().is_ident("transition") {
+      if attr.path().is_ident("derive") {
+        if let Ok(extra) = attr.parse_args_with(
+          Punctuated::<syn::Path, Token![,]>::parse_terminated
+        ) {
+          variant_paths.extend(extra);
+        }
+      } else if attr.path().is_ident("transition") {
         let transition_data: TransitionAttr = attr
           .parse_args()
           .expect("Failed to parse transition attribute");
 
         if !transition_data.derives.is_empty() {
-          let paths = &transition_data.derives;
-          derives = quote! { #[derive(#( #paths ),*)] };
+          variant_paths = transition_data.derives;
         }
 
         let target = &transition_data.target;
@@ -226,8 +232,17 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
           });
         }
+      } else {
+        passthrough_attrs.push(attr);
       }
     }
+
+    let derives = if variant_paths.is_empty() {
+      quote! {}
+    } else {
+      let paths = &variant_paths;
+      quote! { #[derive(#( #paths ),*)] }
+    };
 
     let state_type = if args.prefixed {
       format_ident!("{}{}", enum_name, variant_name)
@@ -236,14 +251,17 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let struct_gen = match fields {
       Fields::Named(f) => quote! {
+        #(#passthrough_attrs)*
         #derives
         #inner_visibility struct #state_type #f
       },
       Fields::Unnamed(f) => quote! {
+        #(#passthrough_attrs)*
         #derives
         #inner_visibility struct #state_type #f;
       },
       Fields::Unit => quote! {
+        #(#passthrough_attrs)*
         #derives
         #inner_visibility struct #state_type;
       },
