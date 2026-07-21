@@ -13,6 +13,9 @@ struct AttrArgs {
   derives: Vec<syn::Path>,
   states: Option<SpecValue>,
   as_caps: Option<SpecValue>,
+  prefixed: bool,
+  wrapped: bool,
+  family_name: Option<String>,
 }
 
 impl Parse for AttrArgs {
@@ -20,6 +23,9 @@ impl Parse for AttrArgs {
     let mut derives = Vec::new();
     let mut states = None;
     let mut as_caps = None;
+    let mut prefixed = false;
+    let mut wrapped = false;
+    let mut family_name = None;
     while !input.is_empty() {
       if input.peek(Ident)
         || input.peek(Token![type])
@@ -41,6 +47,14 @@ impl Parse for AttrArgs {
           input.parse::<Token![=]>()?;
           let val = parse_spec_value(input)?;
           as_caps = Some(val);
+        } else if id == "prefixed" {
+          prefixed = true;
+        } else if id == "wrapped" {
+          wrapped = true;
+        } else if id == "family_name" {
+          input.parse::<Token![=]>()?;
+          let lit: syn::LitStr = input.parse()?;
+          family_name = Some(lit.value());
         }
       }
       if input.peek(Token![,]) {
@@ -53,6 +67,9 @@ impl Parse for AttrArgs {
       derives,
       states,
       as_caps,
+      prefixed,
+      wrapped,
+      family_name,
     })
   }
 }
@@ -117,6 +134,13 @@ impl Parse for TransitionAttr {
 ///
 /// # attr arguments
 /// - `derive(Trait, ...)`: passes derives through to every generated struct.
+/// - `prefixed`: names state structs as `{Enum}{Variant}` (as `DoorOpen`)
+///   instead of just `{Variant}`.
+/// - `wrapped`: places all generated items inside `mod {Enum} { ... }`,
+///   so you access states as `{Enum}::{Variant}` and the family
+///   struct as `{Enum}::State`.
+/// - `family_name = "Name"`: to set the family name (defaults to `State`
+///   with `wrapped`).
 ///
 /// # variant attrs
 /// - `#[transition(Target)]`: marks a valid transition from this state to `Target`.
@@ -147,6 +171,20 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
   let enum_name = &input.ident;
   let visibility = &input.vis;
 
+  let family_ident = if let Some(ref name) = args.family_name {
+    format_ident!("{}", name)
+  } else if args.wrapped {
+    format_ident!("State")
+  } else {
+    enum_name.clone()
+  };
+
+  let inner_visibility = if args.wrapped {
+    quote! { pub }
+  } else {
+    quote! { #visibility }
+  };
+
   let mut generated_structs = Vec::new();
   let mut transition_impls = Vec::new();
   let mut is_state_impls = Vec::new();
@@ -173,46 +211,81 @@ pub fn typestate(attr: TokenStream, item: TokenStream) -> TokenStream {
           .map(|r| quote! { #r })
           .unwrap_or_else(|| quote! { ductor::NoRequirement });
 
-        transition_impls.push(quote! {
-          impl ductor::Transition<#variant_name, #target> for #enum_name {
-            type Requirements = #req;
-          }
-        });
+        if args.prefixed {
+          let from_type = format_ident!("{}{}", enum_name, variant_name);
+          let to_type = format_ident!("{}{}", enum_name, target);
+          transition_impls.push(quote! {
+            impl ductor::Transition<#from_type, #to_type> for #family_ident {
+              type Requirements = #req;
+            }
+          });
+        } else {
+          transition_impls.push(quote! {
+            impl ductor::Transition<#variant_name, #target> for #family_ident {
+              type Requirements = #req;
+            }
+          });
+        }
       }
     }
 
+    let state_type = if args.prefixed {
+      format_ident!("{}{}", enum_name, variant_name)
+    } else {
+      variant_name.clone()
+    };
     let struct_gen = match fields {
       Fields::Named(f) => quote! {
         #derives
-        #visibility struct #variant_name #f
+        #inner_visibility struct #state_type #f
       },
       Fields::Unnamed(f) => quote! {
         #derives
-        #visibility struct #variant_name #f;
+        #inner_visibility struct #state_type #f;
       },
       Fields::Unit => quote! {
         #derives
-        #visibility struct #variant_name;
+        #inner_visibility struct #state_type;
       },
     };
     generated_structs.push(struct_gen);
 
     is_state_impls.push(quote! {
-      impl ductor::IsState for #variant_name {
-        type Family = #enum_name;
+      impl ductor::IsState for #state_type {
+        type Family = #family_ident;
       }
     });
   }
 
-  let expanded = quote! {
-    #( #generated_structs )*
-
+  let family_struct = quote! {
     #derives
-    #visibility struct #enum_name;
-    impl ductor::StateFamily for #enum_name {}
+    #inner_visibility struct #family_ident;
+    impl ductor::StateFamily for #family_ident {}
+  };
 
-    #( #is_state_impls )*
-    #( #transition_impls )*
+  let expanded = if args.wrapped {
+    quote! {
+      #[allow(non_snake_case)]
+      #visibility mod #enum_name {
+        use super::*;
+
+        #( #generated_structs )*
+
+        #family_struct
+
+        #( #is_state_impls )*
+        #( #transition_impls )*
+      }
+    }
+  } else {
+    quote! {
+      #( #generated_structs )*
+
+      #family_struct
+
+      #( #is_state_impls )*
+      #( #transition_impls )*
+    }
   };
 
   TokenStream::from(expanded)
